@@ -1,18 +1,21 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Forms;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using MessageBox = System.Windows.MessageBox;
+using WYDownloader.Core;
 
 namespace WYDownloader
 {
@@ -21,6 +24,8 @@ namespace WYDownloader
     /// </summary>
     public partial class MainWindow : Window
     {
+        private const int DownloadBufferSize = 131072;
+        private static readonly TimeSpan ProgressUpdateInterval = TimeSpan.FromMilliseconds(300);
         private HttpClient httpClient;
         private CancellationTokenSource cancellationTokenSource;
         private bool isDownloading = false;
@@ -28,20 +33,25 @@ namespace WYDownloader
         private Stopwatch downloadStopwatch;
         private long lastBytesReceived = 0;
         private DateTime lastUpdateTime;
+        private DateTime lastProgressUpdateTime;
         private ConfigManager configManager;
-        private string currentDownloadFilePath = "";
-        private Stream currentDownloadStream;
-        private FileStream currentFileStream;
 
         public MainWindow()
         {
             InitializeComponent();
+            this.Title = "直链下载器";
             InitializeDownloader();
             LoadConfiguration();
             LoadBackgroundImageFromResource();
 
             // 添加窗口拖拽功能
             this.MouseLeftButtonDown += MainWindow_MouseLeftButtonDown;
+
+            // 设置标题栏文本
+            if (txtAnnouncementTitle != null)
+            {
+                txtAnnouncementTitle.Text = "直链下载器";
+            }
         }
 
         private void MainWindow_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -194,12 +204,20 @@ namespace WYDownloader
             if (this.WindowState == WindowState.Maximized)
             {
                 this.WindowState = WindowState.Normal;
-                btnMaximize.Content = "□";
+                // 修改图标而不是替换 Content
+                if (btnMaximize.Content is MaterialDesignThemes.Wpf.PackIcon icon)
+                {
+                    icon.Kind = MaterialDesignThemes.Wpf.PackIconKind.CheckboxMultipleBlankOutline;
+                }
             }
             else
             {
                 this.WindowState = WindowState.Maximized;
-                btnMaximize.Content = "❐";
+                // 修改图标而不是替换 Content
+                if (btnMaximize.Content is MaterialDesignThemes.Wpf.PackIcon icon)
+                {
+                    icon.Kind = MaterialDesignThemes.Wpf.PackIconKind.WindowRestore;
+                }
             }
         }
 
@@ -228,7 +246,6 @@ namespace WYDownloader
                 // 继续下载
                 isPaused = false;
                 SetPauseResumeIcon(false); // 显示暂停图标
-                btnPauseResume.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 152, 0)); // #FF9800
                 lblProgress.Text = "继续下载...";
                 downloadStopwatch.Start();
             }
@@ -237,7 +254,6 @@ namespace WYDownloader
                 // 暂停下载
                 isPaused = true;
                 SetPauseResumeIcon(true); // 显示播放图标
-                btnPauseResume.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(76, 175, 80)); // #4CAF50
                 lblProgress.Text = "下载已暂停";
                 downloadStopwatch.Stop();
             }
@@ -249,20 +265,28 @@ namespace WYDownloader
             var template = btnPauseResume.Template;
             if (template != null)
             {
-                var pauseIcon = template.FindName("PauseIcon", btnPauseResume) as System.Windows.Shapes.Path;
-                var playIcon = template.FindName("PlayIcon", btnPauseResume) as System.Windows.Shapes.Path;
-
-                if (pauseIcon != null && playIcon != null)
+                var icon = template.FindName("icon", btnPauseResume) as MaterialDesignThemes.Wpf.PackIcon;
+                var border = template.FindName("border", btnPauseResume) as System.Windows.Controls.Border;
+                
+                if (icon != null)
+                {
+                    icon.Kind = showPlayIcon ? MaterialDesignThemes.Wpf.PackIconKind.Play : MaterialDesignThemes.Wpf.PackIconKind.Pause;
+                }
+                
+                // 切换按钮颜色：播放（黄色）/暂停（蓝色）
+                if (border != null)
                 {
                     if (showPlayIcon)
                     {
-                        pauseIcon.Visibility = Visibility.Collapsed;
-                        playIcon.Visibility = Visibility.Visible;
+                        // 显示播放图标时，使用黄色
+                        border.Background = new System.Windows.Media.SolidColorBrush(
+                            System.Windows.Media.Color.FromRgb(255, 193, 7));
                     }
                     else
                     {
-                        pauseIcon.Visibility = Visibility.Visible;
-                        playIcon.Visibility = Visibility.Collapsed;
+                        // 显示暂停图标时，使用蓝色
+                        border.Background = new System.Windows.Media.SolidColorBrush(
+                            System.Windows.Media.Color.FromRgb(59, 130, 246));
                     }
                 }
             }
@@ -289,7 +313,7 @@ namespace WYDownloader
             // 设置窗口图标
             try
             {
-                this.Icon = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/ico.ico"));
+                this.Icon = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Resources/Icons/ico.ico"));
             }
             catch
             {
@@ -301,9 +325,12 @@ namespace WYDownloader
 
         private async void BtnDownload_Click(object sender, RoutedEventArgs e)
         {
+            System.Diagnostics.Debug.WriteLine("[LOG] BtnDownload_Click 开始");
+            
             if (isDownloading)
             {
                 // 取消下载
+                System.Diagnostics.Debug.WriteLine("[LOG] 取消下载");
                 if (cancellationTokenSource != null)
                     cancellationTokenSource.Cancel();
                 return;
@@ -312,62 +339,141 @@ namespace WYDownloader
             // 检查是否选择了下载项目
             if (cmbDownloadLinks.SelectedItem == null)
             {
+                System.Diagnostics.Debug.WriteLine("[LOG] 未选择下载项目");
                 MessageBox.Show("请先选择要下载的项目！", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
             string selectedName = cmbDownloadLinks.SelectedItem.ToString();
-            string url = configManager.GetDownloadUrl(selectedName);
-            string savePath = AppDomain.CurrentDomain.BaseDirectory; // 固定使用程序当前目录
+            System.Diagnostics.Debug.WriteLine($"[LOG] 选择的项目：{selectedName}");
+            
+            var urls = configManager.ResolveDownloadUrls(selectedName, out string errorMessage);
+            System.Diagnostics.Debug.WriteLine($"[LOG] 解析的 URL 数量：{urls.Count}");
+            
+            string savePath = configManager.GetDefaultDownloadPath(); // 使用配置的下载路径
 
-            // 验证输入
-            if (string.IsNullOrEmpty(url))
+            if (string.IsNullOrWhiteSpace(savePath))
             {
-                MessageBox.Show("所选项目\"" + selectedName + "\"的下载链接为空！\n请检查config.ini文件中的配置。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                savePath = AppDomain.CurrentDomain.BaseDirectory;
+            }
+
+            try
+            {
+                savePath = Path.GetFullPath(savePath);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[LOG] 下载路径无效：{ex.Message}");
+                MessageBox.Show($"下载路径无效：{savePath}\n{ex.Message}",
+                               "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            if (!Uri.IsWellFormedUriString(url, UriKind.Absolute))
+            System.Diagnostics.Debug.WriteLine($"[LOG] 保存路径：{savePath}");
+
+            try
+            {
+                Directory.CreateDirectory(savePath);
+                System.Diagnostics.Debug.WriteLine($"[LOG] 确认下载目录：{savePath}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[LOG] 创建目录失败：{ex.Message}");
+                MessageBox.Show($"无法创建下载目录：{savePath}\n{ex.Message}",
+                               "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            // 验证输入
+            if (!string.IsNullOrEmpty(errorMessage))
+            {
+                System.Diagnostics.Debug.WriteLine($"[LOG] 错误信息：{errorMessage}");
+                MessageBox.Show(errorMessage, "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var candidateUrls = new List<string>();
+            foreach (var url in urls)
+            {
+                if (!Uri.IsWellFormedUriString(url, UriKind.Absolute))
+                {
+                    continue;
+                }
+
+                Uri uri = new Uri(url);
+                if (uri.Scheme != "http" && uri.Scheme != "https")
+                {
+                    continue;
+                }
+
+                candidateUrls.Add(url);
+            }
+
+            if (candidateUrls.Count == 0)
             {
                 MessageBox.Show("所选项目\"" + selectedName + "\"的下载链接无效！\n请检查config.ini文件中的配置。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
-            // 检查URL协议
-            Uri uri = new Uri(url);
-            if (uri.Scheme != "http" && uri.Scheme != "https")
+            Exception lastException = null;
+            for (int index = 0; index < candidateUrls.Count; index++)
             {
-                MessageBox.Show("仅支持HTTP和HTTPS协议的链接！", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
+                var url = candidateUrls[index];
+                bool hasMore = index < candidateUrls.Count - 1;
+                string connectingMessage = candidateUrls.Count > 1
+                    ? "正在连接... (" + (index + 1) + "/" + candidateUrls.Count + ")"
+                    : "正在连接...";
+
+                try
+                {
+                    await StartDownload(url, savePath, connectingMessage, hasMore);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    lastException = ex;
+                    if (cancellationTokenSource != null && cancellationTokenSource.IsCancellationRequested)
+                    {
+                        ResetUI();
+                        return;
+                    }
+
+                    if (hasMore)
+                    {
+                        lblProgress.Text = "当前地址失败，正在尝试备用地址...";
+                        lblSpeed.Text = "";
+                        progressBar.Value = 0;
+                    }
+                }
             }
 
-            try
+            if (lastException != null)
             {
-                await StartDownload(url, savePath);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("下载出错：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show("下载出错：" + lastException.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 ResetUI();
             }
         }
 
-        private async Task StartDownload(string url, string savePath)
+private async Task StartDownload(string url, string savePath, string connectingMessage, bool preserveUiOnFailure)
         {
+            System.Diagnostics.Debug.WriteLine($"[LOG] StartDownload 开始 url={url}");
+            
             cancellationTokenSource = new CancellationTokenSource();
             isDownloading = true;
 
-            // 更新UI状态
+            // 更新 UI 状态
             btnDownload.Content = "取消下载";
             btnDownload.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(231, 76, 60));
             btnPauseResume.IsEnabled = true;
             SetPauseResumeIcon(false); // 显示暂停图标
             btnPauseResume.Background = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255, 152, 0));
             progressBar.Value = 0;
-            lblProgress.Text = "正在连接...";
+            System.Diagnostics.Debug.WriteLine($"[LOG] progressBar.Value 设置为 0");
+            lblProgress.Text = string.IsNullOrWhiteSpace(connectingMessage) ? "正在连接..." : connectingMessage;
             lblSpeed.Text = "";
             isPaused = false;
 
+            bool shouldResetUi = true;
             try
             {
                 // 获取文件名
@@ -377,106 +483,174 @@ namespace WYDownloader
                     fileName = "download_" + DateTime.Now.ToString("yyyyMMdd_HHmmss");
                 }
 
-                string fullPath = Path.Combine(savePath, fileName);
+                string finalPath = Path.Combine(savePath, fileName);
+                string partPath = finalPath + ".part";
 
-                // 如果文件已存在，添加序号
-                int counter = 1;
-                string originalPath = fullPath;
-                while (File.Exists(fullPath))
+                if (File.Exists(finalPath))
                 {
-                    string nameWithoutExt = Path.GetFileNameWithoutExtension(originalPath);
-                    string extension = Path.GetExtension(originalPath);
-                    fullPath = Path.Combine(savePath, nameWithoutExt + "_" + counter + extension);
-                    counter++;
+                    int counter = 1;
+                    string nameWithoutExt = Path.GetFileNameWithoutExtension(finalPath);
+                    string extension = Path.GetExtension(finalPath);
+
+                    do
+                    {
+                        finalPath = Path.Combine(savePath, nameWithoutExt + "_" + counter + extension);
+                        partPath = finalPath + ".part";
+                        counter++;
+                    } while (File.Exists(finalPath) || File.Exists(partPath));
                 }
 
-                // 记录当前下载的文件路径
-                currentDownloadFilePath = fullPath;
+                // 读取断点续传配置
+                bool enableResume = configManager.GetEnableResume();
+                System.Diagnostics.Debug.WriteLine($"[LOG] 断点续传配置：EnableResume={enableResume}");
+
+                long existingBytes = 0;
+                if (enableResume && File.Exists(partPath))
+                {
+                    existingBytes = new FileInfo(partPath).Length;
+                    System.Diagnostics.Debug.WriteLine($"[LOG] 启用断点续传，已存在 {existingBytes} 字节");
+                }
+                else if (!enableResume && File.Exists(partPath))
+                {
+                    // 禁用续传时删除旧的 part 文件
+                    try
+                    {
+                        File.Delete(partPath);
+                        System.Diagnostics.Debug.WriteLine($"[LOG] 禁用断点续传，删除旧的 part 文件：{partPath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"[LOG] 删除 part 文件失败：{ex.Message}");
+                    }
+                }
 
                 // 开始下载
                 downloadStopwatch.Start();
                 lastUpdateTime = DateTime.Now;
-                lastBytesReceived = 0;
+                lastProgressUpdateTime = DateTime.MinValue;
+                lastBytesReceived = existingBytes;
 
-                await DownloadFileAsync(url, fullPath, cancellationTokenSource.Token);
+                await DownloadFileAsync(url, partPath, existingBytes, cancellationTokenSource.Token);
 
                 downloadStopwatch.Stop();
 
                 if (!cancellationTokenSource.Token.IsCancellationRequested)
                 {
                     lblProgress.Text = "下载完成";
-                    currentDownloadFilePath = ""; // 下载完成，清空路径
 
-                    // 检查是否需要自动解压
-                    if (chkAutoExtract.IsChecked == true && Path.GetExtension(fullPath).ToLower() == ".zip")
+                    if (File.Exists(partPath))
                     {
-                        await ExtractZipFile(fullPath, savePath);
+                        if (File.Exists(finalPath))
+                        {
+                            File.Delete(finalPath);
+                        }
+
+                        File.Move(partPath, finalPath);
                     }
 
-                    MessageBox.Show("下载完成！\n文件已保存到: " + fullPath, "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    // 检查是否需要自动解压
+                    if (chkAutoExtract.IsChecked == true && Path.GetExtension(finalPath).ToLower() == ".zip")
+                    {
+                        await ExtractZipFile(finalPath, savePath);
+                    }
+
+                    MessageBox.Show("下载完成！\n文件已保存到: " + finalPath, "提示", MessageBoxButton.OK, MessageBoxImage.Information);
                 }
             }
             catch (OperationCanceledException)
             {
-                lblProgress.Text = "下载已取消";
-
-                // 删除未完成的文件
-                try
-                {
-                    if (!string.IsNullOrEmpty(currentDownloadFilePath) && File.Exists(currentDownloadFilePath))
-                    {
-                        File.Delete(currentDownloadFilePath);
-                        lblProgress.Text = "下载已取消，未完成文件已删除";
-                    }
-                }
-                catch (Exception deleteEx)
-                {
-                    // 如果删除失败，记录但不影响主流程
-                    lblProgress.Text = "下载已取消，但删除文件失败：" + deleteEx.Message;
-                }
+                shouldResetUi = true;
+                lblProgress.Text = "下载已取消（已保留未完成文件，可继续下载）";
             }
             catch (Exception ex)
             {
-                lblProgress.Text = "下载失败";
-
-                // 下载失败时也删除未完成的文件
-                try
-                {
-                    if (!string.IsNullOrEmpty(currentDownloadFilePath) && File.Exists(currentDownloadFilePath))
-                    {
-                        File.Delete(currentDownloadFilePath);
-                    }
-                }
-                catch
-                {
-                    // 忽略删除失败的错误
-                }
-
+                shouldResetUi = !preserveUiOnFailure;
+                lblProgress.Text = "下载失败，已保留未完成文件";
                 throw;
             }
             finally
             {
-                currentDownloadFilePath = ""; // 清空文件路径
-                ResetUI();
+                if (shouldResetUi)
+                {
+                    ResetUI();
+                }
+                else
+                {
+                    downloadStopwatch.Reset();
+                }
+
+                if (cancellationTokenSource != null)
+                {
+                    cancellationTokenSource.Dispose();
+                    cancellationTokenSource = null;
+                }
             }
         }
 
-        private async Task DownloadFileAsync(string url, string filePath, CancellationToken cancellationToken)
+        private async Task DownloadFileAsync(string url, string filePath, long existingBytes, CancellationToken cancellationToken)
         {
-            using (var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken))
+            System.Diagnostics.Debug.WriteLine($"[LOG] DownloadFileAsync 开始 filePath={filePath}, existingBytes={existingBytes}");
+            
+            long resumeBytes = existingBytes;
+            bool triedRange = resumeBytes > 0;
+            HttpResponseMessage response = null;
+
+            while (true)
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, url);
+                if (resumeBytes > 0)
+                {
+                    request.Headers.Range = new RangeHeaderValue(resumeBytes, null);
+                }
+
+                response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+                if (resumeBytes > 0 && (response.StatusCode == HttpStatusCode.OK || response.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable))
+                {
+                    response.Dispose();
+                    if (File.Exists(filePath))
+                    {
+                        File.Delete(filePath);
+                    }
+
+                    resumeBytes = 0;
+                    if (triedRange)
+                    {
+                        triedRange = false;
+                        continue;
+                    }
+                }
+
+                break;
+            }
+
+            using (response)
             {
                 response.EnsureSuccessStatusCode();
 
-                var totalBytes = response.Content.Headers.ContentLength ?? 0;
-                var totalBytesRead = 0L;
+                long totalBytes = response.Content.Headers.ContentLength ?? 0;
+                System.Diagnostics.Debug.WriteLine($"[LOG] totalBytes={totalBytes}");
+                
+                long totalExpectedBytes = totalBytes > 0 ? resumeBytes + totalBytes : 0;
+                System.Diagnostics.Debug.WriteLine($"[LOG] totalExpectedBytes={totalExpectedBytes}");
+                
+                long totalBytesRead = resumeBytes;
+
+                if (resumeBytes > 0)
+                {
+                    await UpdateProgress(resumeBytes, totalExpectedBytes);
+                    lastProgressUpdateTime = DateTime.Now;
+                }
+
+                lastBytesReceived = resumeBytes;
+                lastUpdateTime = DateTime.Now;
+
+                FileMode fileMode = resumeBytes > 0 ? FileMode.Append : FileMode.Create;
 
                 using (var contentStream = await response.Content.ReadAsStreamAsync())
-                using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true))
+                using (var fileStream = new FileStream(filePath, fileMode, FileAccess.Write, FileShare.None, DownloadBufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan))
                 {
-                    currentDownloadStream = contentStream;
-                    currentFileStream = fileStream;
-
-                    var buffer = new byte[8192];
+                    var buffer = new byte[DownloadBufferSize];
                     var isMoreToRead = true;
 
                     do
@@ -501,34 +675,51 @@ namespace WYDownloader
 
                         await fileStream.WriteAsync(buffer, 0, bytesRead, cancellationToken);
                         totalBytesRead += bytesRead;
+                        System.Diagnostics.Debug.WriteLine($"[LOG] 已读取 {totalBytesRead} 字节");
 
                         // 更新进度
                         if (!isPaused)
                         {
-                            await UpdateProgress(totalBytesRead, totalBytes);
+                            var now = DateTime.Now;
+                            if (now - lastProgressUpdateTime >= ProgressUpdateInterval)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"[LOG] 调用 UpdateProgress");
+                                await UpdateProgress(totalBytesRead, totalExpectedBytes);
+                                lastProgressUpdateTime = now;
+                            }
                         }
 
                     } while (isMoreToRead);
 
-                    currentDownloadStream = null;
-                    currentFileStream = null;
+                    if (!isPaused)
+                    {
+                        await UpdateProgress(totalBytesRead, totalExpectedBytes);
+                    }
                 }
             }
         }
 
-        private async Task UpdateProgress(long bytesReceived, long totalBytes)
+private async Task UpdateProgress(long bytesReceived, long totalBytes)
         {
             await Dispatcher.InvokeAsync(() =>
             {
+                System.Diagnostics.Debug.WriteLine($"[LOG] UpdateProgress: bytes={bytesReceived}, total={totalBytes}");
+                
                 if (totalBytes > 0)
                 {
                     var progressPercentage = (double)bytesReceived / totalBytes * 100;
+                    System.Diagnostics.Debug.WriteLine($"[LOG] Progress: {progressPercentage:F1}%, setting progressBar.Value={progressPercentage}");
+                    System.Diagnostics.Debug.WriteLine($"[LOG] progressBar 当前值={progressBar.Value}, 最大值={progressBar.Maximum}");
+                    
                     progressBar.Value = progressPercentage;
+                    
+                    System.Diagnostics.Debug.WriteLine($"[LOG] progressBar 新值={progressBar.Value}");
                     lblProgress.Text = FormatBytes(bytesReceived) + " / " + FormatBytes(totalBytes) + " (" + progressPercentage.ToString("F1") + "%)";
                 }
                 else
                 {
-                    lblProgress.Text = "已下载: " + FormatBytes(bytesReceived);
+                    System.Diagnostics.Debug.WriteLine($"[LOG] totalBytes=0, 不更新进度条");
+                    lblProgress.Text = "已下载：" + FormatBytes(bytesReceived);
                 }
 
                 // 计算下载速度
@@ -602,6 +793,7 @@ namespace WYDownloader
                     {
                         int totalEntries = archive.Entries.Count;
                         int processedEntries = 0;
+                        string extractRoot = Path.GetFullPath(extractDir) + Path.DirectorySeparatorChar;
 
                         foreach (var entry in archive.Entries)
                         {
@@ -610,11 +802,16 @@ namespace WYDownloader
 
                             if (!string.IsNullOrEmpty(entry.Name))
                             {
-                                string destinationPath = Path.Combine(extractDir, entry.FullName);
+                                string destinationPath = Path.GetFullPath(Path.Combine(extractDir, entry.FullName));
+
+                                if (!destinationPath.StartsWith(extractRoot, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    continue;
+                                }
 
                                 // 确保目录存在
                                 string destinationDir = Path.GetDirectoryName(destinationPath);
-                                if (!Directory.Exists(destinationDir))
+                                if (!string.IsNullOrEmpty(destinationDir) && !Directory.Exists(destinationDir))
                                 {
                                     Directory.CreateDirectory(destinationDir);
                                 }
@@ -676,14 +873,50 @@ namespace WYDownloader
         }
 
         /// <summary>
-        /// 从嵌入资源加载背景图片
+        /// 优先从本地加载背景图片，支持多背景轮换，失败回退到嵌入资源
         /// </summary>
         private void LoadBackgroundImageFromResource()
         {
             try
             {
+                // 首先检查配置中是否有自定义背景图片列表
+                var backgroundImages = configManager.GetBackgroundImages();
+                
+                if (backgroundImages.Count > 0)
+                {
+                    // 随机选择一张背景图片
+                    var random = new Random();
+                    var selectedImage = backgroundImages[random.Next(backgroundImages.Count)];
+                    
+                    // 尝试从多个位置加载
+                    string[] possiblePaths = new string[]
+                    {
+                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "Images", "background", selectedImage),
+                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, selectedImage),
+                        Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "Images", selectedImage)
+                    };
+                    
+                    foreach (var imagePath in possiblePaths)
+                    {
+                        if (File.Exists(imagePath))
+                        {
+                            LoadImageFromFile(imagePath);
+                            return;
+                        }
+                    }
+                }
+                
+                // 尝试加载默认背景图片
+                string localPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "Images", "BG.JPG");
+                if (File.Exists(localPath))
+                {
+                    LoadImageFromFile(localPath);
+                    return;
+                }
+
+                // 从嵌入资源加载
                 var assembly = Assembly.GetExecutingAssembly();
-                using (var stream = assembly.GetManifestResourceStream("WYDownloader.BG.JPG"))
+                using (var stream = assembly.GetManifestResourceStream("WYDownloader.Resources.Images.BG.JPG"))
                 {
                     if (stream != null)
                     {
@@ -694,7 +927,7 @@ namespace WYDownloader
                         bitmap.EndInit();
                         bitmap.Freeze();
 
-                        BackgroundImageBrush.ImageSource = bitmap;
+                        BackgroundImage.Source = bitmap;
                     }
                 }
             }
@@ -702,6 +935,21 @@ namespace WYDownloader
             {
                 // 如果加载失败，使用默认背景色
                 System.Diagnostics.Debug.WriteLine("加载背景图片失败: " + ex.Message);
+            }
+        }
+        
+        private void LoadImageFromFile(string filePath)
+        {
+            using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                var bitmap = new BitmapImage();
+                bitmap.BeginInit();
+                bitmap.StreamSource = fileStream;
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.EndInit();
+                bitmap.Freeze();
+
+                BackgroundImage.Source = bitmap;
             }
         }
     }
