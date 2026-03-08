@@ -460,6 +460,8 @@ private async Task StartDownload(string url, string savePath, string connectingM
             
             cancellationTokenSource = new CancellationTokenSource();
             isDownloading = true;
+            bool enableResume = configManager.GetEnableResume();
+            System.Diagnostics.Debug.WriteLine($"[LOG] 断点续传配置：EnableResume={enableResume}");
 
             // 更新 UI 状态
             btnDownload.Content = "取消下载";
@@ -500,10 +502,6 @@ private async Task StartDownload(string url, string savePath, string connectingM
                     } while (File.Exists(finalPath) || File.Exists(partPath));
                 }
 
-                // 读取断点续传配置
-                bool enableResume = configManager.GetEnableResume();
-                System.Diagnostics.Debug.WriteLine($"[LOG] 断点续传配置：EnableResume={enableResume}");
-
                 long existingBytes = 0;
                 if (enableResume && File.Exists(partPath))
                 {
@@ -530,7 +528,7 @@ private async Task StartDownload(string url, string savePath, string connectingM
                 lastProgressUpdateTime = DateTime.MinValue;
                 lastBytesReceived = existingBytes;
 
-                await DownloadFileAsync(url, partPath, existingBytes, cancellationTokenSource.Token);
+                await DownloadFileAsync(url, partPath, existingBytes, enableResume, cancellationTokenSource.Token);
 
                 downloadStopwatch.Stop();
 
@@ -560,7 +558,9 @@ private async Task StartDownload(string url, string savePath, string connectingM
             catch (OperationCanceledException)
             {
                 shouldResetUi = true;
-                lblProgress.Text = "下载已取消（已保留未完成文件，可继续下载）";
+                lblProgress.Text = enableResume
+                    ? "下载已取消（已保留未完成文件，可继续下载）"
+                    : "下载已取消";
             }
             catch (Exception ex)
             {
@@ -587,18 +587,18 @@ private async Task StartDownload(string url, string savePath, string connectingM
             }
         }
 
-        private async Task DownloadFileAsync(string url, string filePath, long existingBytes, CancellationToken cancellationToken)
+        private async Task DownloadFileAsync(string url, string filePath, long existingBytes, bool enableResume, CancellationToken cancellationToken)
         {
             System.Diagnostics.Debug.WriteLine($"[LOG] DownloadFileAsync 开始 filePath={filePath}, existingBytes={existingBytes}");
             
-            long resumeBytes = existingBytes;
-            bool triedRange = resumeBytes > 0;
+            long resumeBytes = enableResume ? existingBytes : 0;
+            bool triedRange = enableResume && resumeBytes > 0;
             HttpResponseMessage response = null;
 
             while (true)
             {
                 var request = new HttpRequestMessage(HttpMethod.Get, url);
-                if (resumeBytes > 0)
+                if (enableResume && resumeBytes > 0)
                 {
                     request.Headers.Range = new RangeHeaderValue(resumeBytes, null);
                 }
