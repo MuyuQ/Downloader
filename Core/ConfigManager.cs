@@ -2,26 +2,27 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Text;
 using System.Reflection;
 
-namespace WYDownloader
+namespace WYDownloader.Core
 {
     public class ConfigManager
     {
         private string configContent;
         private Dictionary<string, Dictionary<string, string>> configData;
 
+        private readonly string localConfigPath;
+
         public ConfigManager()
         {
-            // 直接从嵌入资源中读取配置，不创建外部文件
-            LoadEmbeddedConfig();
+            localConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Resources", "Config", "config.ini");
+            LoadConfig();
         }
 
-        private void LoadEmbeddedConfig()
+        private void LoadConfig()
         {
-            configContent = GetEmbeddedConfigContent();
+            configContent = GetLocalConfigContent() ?? GetEmbeddedConfigContent();
             if (string.IsNullOrEmpty(configContent))
             {
                 // 如果无法读取嵌入资源，使用硬编码的默认配置
@@ -32,12 +33,18 @@ AutoExtractZip=true
 ; 默认选择的下载项目（对应Downloads节中的键名）
 DefaultDownload=Keira工具
 
+[Servers]
+; 下载资源服务器地址（用于相对路径，可选）
+BaseUrl=
+; 备用镜像地址（可选，多个用 | 分隔）
+Mirrors=
+
 [Downloads]
 ; 下载链接配置格式：名称=URL
 ; 可以添加多个下载链接，每行一个
 示例文件=https://httpbin.org/json
 测试ZIP文件=https://github.com/microsoft/vscode/archive/refs/heads/main.zip
-Keira工具=https://fly.qingyuji.cn/f/d/B0jWHm/Keira-3.10.3.WINDO exe
+Keira工具=https://gitee.com/wyark/keira3/releases/download/Keira3%E6%B1%89%E5%8C%96%E7%89%88/Keira-3.10.3.WINDOWS.exe%20(1).zip
 
 [Announcement]
 ; 公告标题
@@ -56,12 +63,29 @@ WindowHeight=600";
             ParseConfigContent();
         }
 
+        private string GetLocalConfigContent()
+        {
+            try
+            {
+                if (File.Exists(localConfigPath))
+                {
+                    return File.ReadAllText(localConfigPath, Encoding.UTF8);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("读取本地配置失败，将尝试嵌入配置: " + ex.Message);
+            }
+
+            return null;
+        }
+
         private string GetEmbeddedConfigContent()
         {
             try
             {
                 var assembly = Assembly.GetExecutingAssembly();
-                var resourceName = "WYDownloader.config.ini";
+                var resourceName = "WYDownloader.Resources.Config.config.ini";
 
                 using (Stream stream = assembly.GetManifestResourceStream(resourceName))
                 {
@@ -74,9 +98,9 @@ WindowHeight=600";
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // 如果读取失败，返回null，使用fallback配置
+                Logger.Warn("读取嵌入配置失败，将尝试默认配置: " + ex.Message);
             }
 
             return null;
@@ -136,9 +160,9 @@ WindowHeight=600";
                     return configData[section][key];
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // 如果读取失败，返回默认值
+                Logger.Warn("读取配置键值失败，返回默认值: " + ex.Message);
             }
 
             return defaultValue;
@@ -167,9 +191,9 @@ WindowHeight=600";
                     }
                 }
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // 如果读取失败，返回默认值
+                Logger.Warn("读取下载链接失败，返回默认值: " + ex.Message);
             }
 
             // 如果没有配置或读取失败，返回默认值
@@ -191,6 +215,91 @@ WindowHeight=600";
         {
             var downloads = GetDownloadLinks();
             return downloads.ContainsKey(downloadName) ? downloads[downloadName] : "";
+        }
+
+        public string GetServerBaseUrl()
+        {
+            return ReadValue("Servers", "BaseUrl", "");
+        }
+
+        public List<string> GetServerMirrors()
+        {
+            var value = ReadValue("Servers", "Mirrors", "");
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return new List<string>();
+            }
+
+            return value.Split('|')
+                .Select(mirror => mirror.Trim())
+                .Where(mirror => !string.IsNullOrWhiteSpace(mirror))
+                .ToList();
+        }
+
+        public List<string> ResolveDownloadUrls(string downloadName, out string errorMessage)
+        {
+            errorMessage = "";
+            var rawUrl = GetDownloadUrl(downloadName);
+            if (string.IsNullOrWhiteSpace(rawUrl))
+            {
+                errorMessage = "所选项目\"" + downloadName + "\"的下载链接为空！\n请检查config.ini文件中的配置。";
+                return new List<string>();
+            }
+
+            if (Uri.TryCreate(rawUrl, UriKind.Absolute, out var absoluteUri))
+            {
+                return new List<string> { absoluteUri.ToString() };
+            }
+
+            if (rawUrl.Contains("://"))
+            {
+                errorMessage = "所选项目\"" + downloadName + "\"的下载链接无效！\n请检查config.ini文件中的配置。";
+                return new List<string>();
+            }
+
+            var serverUrls = new List<string>();
+            var baseUrl = GetServerBaseUrl();
+            if (!string.IsNullOrWhiteSpace(baseUrl))
+            {
+                serverUrls.Add(baseUrl);
+            }
+
+            serverUrls.AddRange(GetServerMirrors());
+
+            var resolvedUrls = new List<string>();
+            foreach (var serverUrl in serverUrls)
+            {
+                if (!Uri.TryCreate(serverUrl.Trim(), UriKind.Absolute, out var baseUri))
+                {
+                    continue;
+                }
+
+                if (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)
+                {
+                    continue;
+                }
+
+                var baseUriString = baseUri.AbsoluteUri;
+                if (!baseUriString.EndsWith("/"))
+                {
+                    baseUriString += "/";
+                }
+
+                var normalizedBaseUri = new Uri(baseUriString);
+                if (Uri.TryCreate(normalizedBaseUri, rawUrl, out var resolvedUri))
+                {
+                    resolvedUrls.Add(resolvedUri.ToString());
+                }
+            }
+
+            resolvedUrls = resolvedUrls.Distinct().ToList();
+
+            if (resolvedUrls.Count == 0)
+            {
+                errorMessage = "所选项目\"" + downloadName + "\"使用了相对路径，但未配置有效的服务器地址。\n请在config.ini文件中设置[Servers]的BaseUrl或Mirrors。";
+            }
+
+            return resolvedUrls;
         }
 
         public bool GetAutoExtractZip()
@@ -222,6 +331,36 @@ WindowHeight=600";
             string value = ReadValue("UI", "WindowHeight", "600");
             int height;
             return int.TryParse(value, out height) ? height : 600;
+        }
+
+        public bool GetEnableResume()
+        {
+            string value = ReadValue("Settings", "EnableResume", "true");
+            return value.ToLower() == "true";
+        }
+
+        public string GetDefaultDownloadPath()
+        {
+            string value = ReadValue("Settings", "DefaultDownloadPath", "");
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return AppDomain.CurrentDomain.BaseDirectory;
+            }
+            return value;
+        }
+
+        public List<string> GetBackgroundImages()
+        {
+            var value = ReadValue("Settings", "BackgroundImages", "");
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return new List<string>();
+            }
+
+            return value.Split('|')
+                .Select(img => img.Trim())
+                .Where(img => !string.IsNullOrWhiteSpace(img))
+                .ToList();
         }
     }
 }

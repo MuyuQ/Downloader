@@ -1,0 +1,17 @@
+Please analyze CODE_REVIEW_REPORT_3.md and create a comprehensive fix plan.
+
+Requirements:
+1. Analyze all P2 and P3/P4 issues
+2. Create detailed fix steps for each issue
+3. Provide specific code modifications with examples
+4. Evaluate fix risks and testing validation methods
+5. Suggest fix order and estimated effort
+6. Ensure each fix is atomic and independently testable
+
+Output a complete fix plan document in Markdown format including:
+- Issue overview
+- Fix priorities
+- Detailed fix solutions (for each issue)
+- Test validation plan
+- Risk assessment
+- Time estimates

@@ -1,0 +1,17 @@
+# Build outputs
+bin/
+obj/
+
+# IDE and tooling
+.vs/
+.dotnet-home/
+*.user
+*.suo
+
+# Logs
+logs/
+*.log
+
+# OS files
+Thumbs.db
+Desktop.ini
