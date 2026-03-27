@@ -74,6 +74,9 @@
     <Compile Include="Core\ConfigManager.cs" />
     <Compile Include="Core\DownloadManager.cs" />
     <Compile Include="Core\Logger.cs" />
+    <Compile Include="Core\Security\SafeZipExtractor.cs" />
+    <Compile Include="Core\Threading\PauseToken.cs" />
+    <Compile Include="Core\Threading\ThreadSafeBoolean.cs" />
     <Compile Include="MainWindow.xaml.cs">
       <DependentUpon>MainWindow.xaml</DependentUpon>
       <SubType>Code</SubType>

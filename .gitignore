@@ -15,3 +15,7 @@ logs/
 # OS files
 Thumbs.db
 Desktop.ini
+
+# Backup files
+Backup/
+*.bak
