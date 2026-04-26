@@ -99,14 +99,16 @@ namespace WYDownloader
         /// <summary>
         /// 最后的下载完成事件参数
         /// 用于在异步操作中传递事件结果
+        /// 使用 volatile 确保多线程环境下的可见性
         /// </summary>
-        private DownloadCompletedEventArgs _lastCompletedArgs;
+        private volatile DownloadCompletedEventArgs _lastCompletedArgs;
 
         /// <summary>
         /// 最后的下载错误异常
         /// 用于在异步操作中传递错误信息
+        /// 使用 volatile 确保多线程环境下的可见性
         /// </summary>
-        private Exception _lastDownloadError;
+        private volatile Exception _lastDownloadError;
 
         #endregion
 
@@ -687,6 +689,10 @@ namespace WYDownloader
                     throw new IOException("下载完成但未找到输出文件");
                 }
 
+                // 安全校验：检查下载文件的扩展名，记录日志
+                var downloadedExt = Path.GetExtension(finalPath).ToLowerInvariant();
+                Logger.Info($"下载完成，文件扩展名: {downloadedExt}");
+
                 // 更新完成状态
                 lblProgress.Text = "下载完成";
                 progressBar.Value = 100;
@@ -998,6 +1004,18 @@ namespace WYDownloader
             {
                 cancelRequested = true;
                 downloadManager?.CancelDownload();
+
+                // 等待下载完全停止，防止状态不一致
+                // 轮询检查 IsDownloading 状态，确保后台任务彻底完成
+                if (downloadManager != null)
+                {
+                    int waitCount = 0;
+                    while (downloadManager.IsDownloading && waitCount < 50)
+                    {
+                        await Task.Delay(100);
+                        waitCount++;
+                    }
+                }
 
                 if (activeDownloadTask != null)
                 {

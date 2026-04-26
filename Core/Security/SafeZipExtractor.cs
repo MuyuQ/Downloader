@@ -31,18 +31,31 @@ namespace WYDownloader.Core.Security
         #region 常量
 
         /// <summary>
-        /// 危险文件扩展名黑名单
-        /// 这些扩展名的文件可能包含可执行代码或脚本
+        /// 安全文件扩展名白名单
+        /// 仅允许以下已知安全的文件类型被解压
+        /// 白名单模式比黑名单更安全：未知类型一律拒绝
         /// </summary>
-        private static readonly HashSet<string> DangerousExtensions = new HashSet<string>(
+        private static readonly HashSet<string> AllowedExtensions = new HashSet<string>(
             StringComparer.OrdinalIgnoreCase)
         {
-            // Windows 可执行文件
-            ".exe", ".dll", ".com", ".scr", ".pif", ".bat", ".cmd",
-            // 脚本文件
-            ".sh", ".ps1", ".vbs", ".js", ".wsf", ".hta",
-            // 其他可执行文件
-            ".jar", ".msi", ".app", ".dmg"
+            // 文档文件
+            ".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+            // 图片文件
+            ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".svg", ".webp",
+            // 压缩文件
+            ".zip", ".rar", ".7z", ".tar", ".gz",
+            // 音频视频
+            ".mp3", ".wav", ".flac", ".mp4", ".avi", ".mkv", ".flv", ".webm",
+            // 数据文件
+            ".json", ".xml", ".csv", ".ini", ".cfg", ".conf", ".yaml", ".yml", ".toml",
+            // 代码/文本
+            ".html", ".htm", ".css", ".scss", ".md", ".rtf",
+            // 字体文件
+            ".ttf", ".otf", ".woff", ".woff2",
+            // 安装包元数据（非可执行）
+            ".sha256", ".md5", ".asc", ".sig",
+            // 其他
+            ".log", ".dat", ".bak"
         };
 
         /// <summary>
@@ -252,11 +265,12 @@ namespace WYDownloader.Core.Security
 
                 #region 文件扩展名检查
 
-                // 检查文件扩展名
+                // 白名单模式：仅允许已知安全的文件扩展名
+                // 未知扩展名一律拒绝，防止恶意文件类型逃逸
                 string extension = Path.GetExtension(entry.Name);
-                if (DangerousExtensions.Contains(extension))
+                if (string.IsNullOrEmpty(extension) || !AllowedExtensions.Contains(extension))
                 {
-                    Logger.Warn($"阻止危险文件类型: {entry.Name}");
+                    Logger.Warn($"阻止未白名单文件类型: {entry.Name} (扩展名: {extension ?? "(无)"})");
                     return false;
                 }
 

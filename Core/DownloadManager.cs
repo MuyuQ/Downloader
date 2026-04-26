@@ -435,6 +435,9 @@ namespace WYDownloader.Core
 
             while (true)
             {
+                // 每次重试循环开始时检查取消请求，防止无限循环
+                cancellationToken.ThrowIfCancellationRequested();
+
                 try
                 {
                     using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -471,11 +474,14 @@ namespace WYDownloader.Core
 
                     return response;
                 }
-                catch (HttpRequestException) when (currentRetry < maxRetries)
+                catch (HttpRequestException ex) when (currentRetry < maxRetries)
                 {
-                    // 网络错误重试
+                    // 网络错误重试：指数退避策略 (2s, 4s, 8s)
+                    // 指数退避比线性延迟更能有效应对网络拥塞
                     currentRetry++;
-                    await Task.Delay(TimeSpan.FromSeconds(currentRetry), cancellationToken);
+                    int delaySeconds = (int)Math.Pow(2, currentRetry); // 2^1=2, 2^2=4, 2^3=8
+                    Logger.Warn($"网络请求失败 (第{currentRetry}次重试，{delaySeconds}秒后重试): {ex.Message}");
+                    await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
                 }
             }
         }

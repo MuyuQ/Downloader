@@ -366,9 +366,16 @@ WindowHeight=600";
                 return new List<string>();
             }
 
-            // 如果是绝对 URL，直接返回
+            // 如果是绝对 URL，验证协议白名单后返回
             if (Uri.TryCreate(rawUrl, UriKind.Absolute, out var absoluteUri))
             {
+                // 安全校验：仅允许 http:// 和 https:// 协议
+                // 拒绝 file://, ftp://, data:// 等可能被滥用的协议
+                if (absoluteUri.Scheme != Uri.UriSchemeHttp && absoluteUri.Scheme != Uri.UriSchemeHttps)
+                {
+                    errorMessage = "所选项目\"" + downloadName + "\"的下载链接使用了不支持的协议（" + absoluteUri.Scheme + "）！\n仅允许 http:// 和 https:// 协议。";
+                    return new List<string>();
+                }
                 return new List<string> { absoluteUri.ToString() };
             }
 
