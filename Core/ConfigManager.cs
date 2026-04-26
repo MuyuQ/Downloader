@@ -145,7 +145,7 @@ namespace WYDownloader.Core
 AutoExtractZip=true
 
 ; 默认选择的下载项目（对应Downloads节中的键名）
-DefaultDownload=Keira工具
+DefaultDownload=
 
 ; 断点续传开关 (true/false)
 EnableResume=true
@@ -165,9 +165,7 @@ Mirrors=
 [Downloads]
 ; 下载链接配置格式：名称=URL
 ; 可以添加多个下载链接，每行一个
-示例文件=https://httpbin.org/json
-测试ZIP文件=https://github.com/microsoft/vscode/archive/refs/heads/main.zip
-Keira工具=https://gitee.com/wyark/keira3/releases/download/Keira3%E6%B1%89%E5%8C%96%E7%89%88/Keira-3.10.3.WINDOWS.exe%20(1).zip
+; 示例: 示例文件=https://httpbin.org/json
 
 [Announcement]
 ; 公告标题
@@ -311,13 +309,8 @@ WindowHeight=600";
                 Logger.Warn("读取下载链接失败，返回默认值: " + ex.Message);
             }
 
-            // 如果没有配置或读取失败，返回默认值
-            if (downloads.Count == 0)
-            {
-                downloads["示例文件"] = "https://httpbin.org/json";
-                downloads["测试ZIP文件"] = "https://github.com/microsoft/vscode/archive/refs/heads/main.zip";
-            }
-
+            // 如果没有配置或读取失败，返回空字典
+            // 不再提供默认下载链接，用户需自行在 config.ini 中配置
             return downloads;
         }
 

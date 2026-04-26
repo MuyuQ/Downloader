@@ -42,8 +42,8 @@ namespace WYDownloader.Core.Security
             ".txt", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
             // 图片文件
             ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".ico", ".svg", ".webp",
-            // 压缩文件
-            ".zip", ".rar", ".7z", ".tar", ".gz",
+            // 安全的压缩文件（仅限 .zip，其他格式需要专门的解压工具）
+            ".zip",
             // 音频视频
             ".mp3", ".wav", ".flac", ".mp4", ".avi", ".mkv", ".flv", ".webm",
             // 数据文件

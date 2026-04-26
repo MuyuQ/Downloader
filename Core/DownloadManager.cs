@@ -433,10 +433,25 @@ namespace WYDownloader.Core
             long currentResumeBytes = resumeBytes;
             bool triedRange = currentResumeBytes > 0 && _enableResume;
 
+            // 可重试的 HTTP 状态码：服务器临时错误
+            var retryableStatusCodes = new HashSet<HttpStatusCode>
+            {
+                HttpStatusCode.BadGateway,       // 502
+                HttpStatusCode.ServiceUnavailable, // 503
+                HttpStatusCode.GatewayTimeout     // 504
+            };
+
             while (true)
             {
                 // 每次重试循环开始时检查取消请求，防止无限循环
                 cancellationToken.ThrowIfCancellationRequested();
+
+                // 检查重试次数上限，防止无限循环
+                if (currentRetry > maxRetries)
+                {
+                    throw new HttpRequestException(
+                        $"下载失败：已达到最大重试次数 ({maxRetries})，请检查网络连接后重试。");
+                }
 
                 try
                 {
@@ -464,7 +479,7 @@ namespace WYDownloader.Core
                         Logger.Warn("服务端不支持续传，回退到整包下载");
                         currentResumeBytes = 0;
 
-                        // 如果之前尝试过 Range，不再重试
+                        // 如果之前尝试过 Range，不再重试（直接重新请求）
                         if (triedRange)
                         {
                             triedRange = false;
@@ -472,6 +487,19 @@ namespace WYDownloader.Core
                         }
                     }
 
+                    // 处理可重试的服务器错误状态码
+                    if (retryableStatusCodes.Contains(response.StatusCode) && currentRetry < maxRetries)
+                    {
+                        response.Dispose();
+                        currentRetry++;
+                        int delaySeconds = (int)Math.Pow(2, currentRetry);
+                        Logger.Warn($"服务器返回 {response.StatusCode} (第{currentRetry}次重试，{delaySeconds}秒后重试)");
+                        await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken);
+                        continue;
+                    }
+
+                    // 其他状态码（包括 4xx 客户端错误和不可重试的 5xx）直接返回
+                    // 由调用方 EnsureSuccessStatusCode() 处理
                     return response;
                 }
                 catch (HttpRequestException ex) when (currentRetry < maxRetries)
@@ -662,6 +690,12 @@ namespace WYDownloader.Core
         /// </summary>
         public void Dispose()
         {
+            // 先取消正在进行的下载，确保网络请求和文件操作停止
+            if (_isDownloading.Value)
+            {
+                _cancellationTokenSource?.Cancel();
+            }
+
             Cleanup();
             _httpClient?.Dispose();
         }

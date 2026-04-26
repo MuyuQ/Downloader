@@ -34,6 +34,11 @@ namespace WYDownloader
         #region 私有字段 - 下载状态
 
         /// <summary>
+        /// 静态 Random 实例，避免频繁创建导致重复种子
+        /// </summary>
+        private static readonly Random _random = new Random();
+
+        /// <summary>
         /// 是否正在下载
         /// </summary>
         private bool isDownloading = false;
@@ -978,7 +983,7 @@ namespace WYDownloader
                 if (!isClosingInProgress)
                 {
                     isClosingInProgress = true;
-                    BeginCloseAfterCancelAsync();
+                    _ = BeginCloseAfterCancelAsync(); // fire-and-forget: 异步关闭流程
                 }
 
                 return;
@@ -998,7 +1003,7 @@ namespace WYDownloader
         /// 异步关闭流程
         /// 取消下载后关闭窗口
         /// </summary>
-        private async void BeginCloseAfterCancelAsync()
+        private async Task BeginCloseAfterCancelAsync()
         {
             try
             {
@@ -1051,9 +1056,8 @@ namespace WYDownloader
 
                 if (backgroundImages.Count > 0)
                 {
-                    // 随机选择一张背景图片
-                    var random = new Random();
-                    var selectedImage = backgroundImages[random.Next(backgroundImages.Count)];
+                    // 随机选择一张背景图片（使用静态 Random 实例避免重复种子问题）
+                    var selectedImage = backgroundImages[_random.Next(backgroundImages.Count)];
 
                     // 尝试从多个位置加载
                     string[] possiblePaths = new string[]
