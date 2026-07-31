@@ -38,3 +38,6 @@ msbuild WYDownloader.sln /p:Configuration=Release
 
 - Windows 7 SP1+
 - .NET Framework 4.7.2
+
+---
+*最后更新: 2026-07-31*
